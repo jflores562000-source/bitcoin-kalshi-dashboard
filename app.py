@@ -9,7 +9,7 @@ import streamlit as st
 
 st.set_page_config(page_title='BTC / Kalshi 15m Lab', layout='wide')
 st.title('₿ Bitcoin / Kalshi 15-Minute Lab')
-st.caption('Research dashboard • Live Coinbase spot prices • Kalshi market data auto-loaded when available • No automated trading')
+st.caption('Research dashboard • Live Coinbase spot prices • Kalshi market data auto-loaded when available • No automated trading') 
 BASE='https://api.exchange.coinbase.com'
 HEAD={'User-Agent':'btc-kalshi-research/1.0','Accept':'application/json'}
 
