@@ -6,10 +6,11 @@ import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
+import tracker
 
 st.set_page_config(page_title='BTC / Kalshi 15m Lab', layout='wide')
 st.title('₿ Bitcoin / Kalshi 15-Minute Lab')
-st.caption('Research dashboard • Kalshi quotes auto-refresh every 3 seconds while the page is open • Coinbase reference spot • No automated trading')
+st.caption('Research dashboard • Kalshi quotes auto-refresh every 3 seconds while open • Live prediction log and historical proxy tests • No automated trading')
 BASE='https://api.exchange.coinbase.com'
 HEAD={'User-Agent':'btc-kalshi-research/1.0','Accept':'application/json'}
 
@@ -205,6 +206,9 @@ def live_kalshi_panel():
         ])
         st.dataframe(result.style.format({'Model probability':'{:.1%}','Ask ($)':'${:.2f}','Estimated fee ($)':'${:.2f}','Break-even probability':'{:.1%}','Model EV / contract ($)':'${:+.3f}'}),hide_index=True,use_container_width=True)
         st.warning('Model probabilities are UNVALIDATED. Coinbase spot differs from Kalshi’s settlement reference; apparent positive EV may be entirely spurious. Do not treat this table as a trading signal.')
+    # Log one fixed-horizon forecast per market; only explicit Kalshi final results count.
+    tracker.render(market if auto else None, live_spot if 'live_spot' in locals() else spot,
+                   sigma*volmult, probability_up, fee_per_contract)
 
 
 live_kalshi_panel()
