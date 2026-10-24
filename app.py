@@ -9,7 +9,7 @@ import streamlit as st
 
 st.set_page_config(page_title='BTC / Kalshi 15m Lab', layout='wide')
 st.title('₿ Bitcoin / Kalshi 15-Minute Lab')
-st.caption('Research dashboard • Live Coinbase spot prices • Kalshi market data auto-loaded when available • No automated trading') 
+st.caption('Research dashboard • Live Coinbase spot prices • Kalshi market data auto-loaded when available • No automated trading')
 BASE='https://api.exchange.coinbase.com'
 HEAD={'User-Agent':'btc-kalshi-research/1.0','Accept':'application/json'}
 
@@ -75,29 +75,54 @@ def _cents(m, dollar_key, cent_key):
 
 @st.cache_data(ttl=12, show_spinner=False)
 def current_kalshi():
-    """Public, read-only Kalshi market discovery; no login or trading keys."""
-    response = requests.get(KALSHI_API + '/markets',
-        params={'series_ticker':'KXBTC15M','status':'open','limit':100},
-        headers=HEAD, timeout=12)
-    response.raise_for_status()
-    markets = response.json().get('markets', [])
-    utc_now = datetime.now(timezone.utc)
-    eligible=[]
-    for m in markets:
+    """Discover the current 15-minute event by Eastern-time event ticker.
+
+    If the API does not publish a target or executable quote, fail closed.
+    """
+    from zoneinfo import ZoneInfo
+    now = datetime.now(timezone.utc)
+    et = now.astimezone(ZoneInfo('America/New_York'))
+    start = et.replace(minute=(et.minute // 15) * 15, second=0, microsecond=0)
+    diagnostics = []
+    for offset in (0, -15, 15):
+        candidate = start + timedelta(minutes=offset)
+        event_ticker = 'KXBTC15M-' + candidate.strftime('%y%b%d%H%M').upper()
         try:
-            close=datetime.fromisoformat(m['close_time'].replace('Z','+00:00'))
-            opened=datetime.fromisoformat(m['open_time'].replace('Z','+00:00')) if m.get('open_time') else None
-        except (KeyError, ValueError, TypeError): continue
-        if close <= utc_now or (opened and opened > utc_now): continue
-        strike=_number(m.get('floor_strike'))
-        if strike is None or strike<=0: continue
-        eligible.append((close,m,strike))
-    if not eligible: raise ValueError('No active market with a published target was returned. Try refreshing in a moment.')
-    close,m,strike=min(eligible,key=lambda item:item[0])
-    return {'ticker':m['ticker'],'target':strike,'close':close.isoformat(),
-            'upask':_cents(m,'yes_ask_dollars','yes_ask'),
-            'downask':_cents(m,'no_ask_dollars','no_ask'),
-            'retrieved':utc_now.isoformat()}
+            r = requests.get(KALSHI_API + '/events/' + event_ticker,
+                params={'with_nested_markets':'true'}, headers=HEAD, timeout=12)
+            if r.status_code == 404:
+                diagnostics.append(event_ticker + ': not found')
+                continue
+            r.raise_for_status()
+            payload = r.json()
+            markets = payload.get('markets') or payload.get('event', {}).get('markets') or []
+            for m in markets:
+                close_str = m.get('close_time')
+                if not close_str: continue
+                close = datetime.fromisoformat(close_str.replace('Z','+00:00'))
+                opened = datetime.fromisoformat(m['open_time'].replace('Z','+00:00')) if m.get('open_time') else None
+                if close <= now or (opened and opened > now): continue
+                strike = _number(m.get('floor_strike'))
+                if strike is None:
+                    # Some binary events publish the threshold in the subtitle.
+                    import re
+                    subtitle = str(m.get('yes_sub_title') or m.get('no_sub_title') or '')
+                    match = re.search(r'Target\s*price\s*:\s*\$?([\d,]+(?:\.\d+)?)', subtitle, re.I)
+                    if match: strike = _number(match.group(1).replace(',',''))
+                upask = _cents(m,'yes_ask_dollars','yes_ask')
+                downask = _cents(m,'no_ask_dollars','no_ask')
+                if not strike or strike <= 0:
+                    diagnostics.append(event_ticker + ': target unpublished')
+                    continue
+                if upask is None or downask is None or not (0 < upask < 100 and 0 < downask < 100):
+                    diagnostics.append(event_ticker + ': quotes unavailable')
+                    continue
+                return {'ticker':m['ticker'],'target':strike,'close':close.isoformat(),
+                        'upask':upask,'downask':downask,'retrieved':now.isoformat()}
+            if not markets: diagnostics.append(event_ticker + ': no nested markets')
+        except (requests.RequestException, ValueError, KeyError) as exc:
+            diagnostics.append(event_ticker + ': ' + str(exc)[:120])
+    raise ValueError('No verified live market found. ' + '; '.join(diagnostics))
 
 st.sidebar.header('Configuration')
 days=st.sidebar.slider('Historical data (days)',1,7,2)
@@ -139,7 +164,7 @@ if auto:
         age=(datetime.now(timezone.utc)-datetime.fromisoformat(market['retrieved'])).total_seconds()
         st.success(f"Market: {market['ticker']} • Snapshot age: {age:.0f} seconds • Data from Kalshi public API")
     except Exception as exc:
-        st.warning(f'Kalshi auto-load unavailable: {exc}. Turn off auto-load for manual entry.')
+        st.warning(f'Kalshi auto-load unavailable: {exc}. No live quote or target is available. Turn off auto-load only to enter independently verified values.')
 if market:
     target=market['target']
     upask=market['upask']
@@ -158,8 +183,8 @@ else:
     downask=c3.number_input('DOWN contract ask (¢)',min_value=1,max_value=99,value=50)
     minutes=c4.number_input('Minutes until settlement',min_value=0.01,max_value=15.0,value=float(round(max(remaining,.01),2)),step=.25)
 volmult=st.slider('Volatility stress multiplier',.5,3.0,1.0,.1)
-if upask is None or downask is None or minutes<=0:
-    st.warning('Quotes are unavailable or this market has ended. Probability comparison is disabled; refresh the market.')
+if (auto and market is None) or upask is None or downask is None or minutes<=0:
+    st.warning('Verified live market data unavailable. Probability comparison is disabled until a valid Kalshi market is loaded or you switch to manual mode.')
 else:
     st.caption('Fee estimates below use a simplified standard fee formula; verify the exact Kalshi fee for your order in the trade preview.')
     feeup=fee_per_contract(upask)
