@@ -9,11 +9,11 @@ import streamlit as st
 
 st.set_page_config(page_title='BTC / Kalshi 15m Lab', layout='wide')
 st.title('₿ Bitcoin / Kalshi 15-Minute Lab')
-st.caption('Research dashboard • Live Coinbase spot prices • Kalshi market data auto-loaded when available • No automated trading')
+st.caption('Research dashboard • Kalshi quotes auto-refresh every 3 seconds while the page is open • Coinbase reference spot • No automated trading')
 BASE='https://api.exchange.coinbase.com'
 HEAD={'User-Agent':'btc-kalshi-research/1.0','Accept':'application/json'}
 
-@st.cache_data(ttl=25, show_spinner=False)
+@st.cache_data(ttl=3, show_spinner=False)
 def ticker():
     r=requests.get(BASE+'/products/BTC-USD/ticker',headers=HEAD,timeout=12)
     r.raise_for_status()
@@ -73,7 +73,7 @@ def _cents(m, dollar_key, cent_key):
     if v is not None: return round(v * 100, 2)
     return _number(m.get(cent_key))
 
-@st.cache_data(ttl=12, show_spinner=False)
+@st.cache_data(ttl=3, show_spinner=False)
 def current_kalshi():
     """Discover the current 15-minute event by Eastern-time event ticker.
 
@@ -125,6 +125,7 @@ def current_kalshi():
     raise ValueError('No verified live market found. ' + '; '.join(diagnostics))
 
 st.sidebar.header('Configuration')
+st.sidebar.caption('Kalshi market and reference spot poll every 3 seconds while the page is open. Historical candles remain cached.')
 days=st.sidebar.slider('Historical data (days)',1,7,2)
 lookback=st.sidebar.select_slider('Volatility lookback (1-minute returns)',options=[15,30,60,120,240],value=60)
 refresh=st.sidebar.button('↻ Refresh live data')
@@ -155,48 +156,58 @@ d.metric('Current UTC window ends',window_end.strftime('%H:%M UTC'),f'{remaining
 st.line_chart(df['close'].tail(120),height=250)
 st.caption('Coinbase BTC-USD is a reference spot feed, NOT necessarily the exact price source, timestamp, or settlement rule used by Kalshi. Confirm the market rules before using any estimate.')
 
-st.subheader('2. Live Kalshi target / probability model')
-auto = st.toggle('Automatically load current Kalshi market', value=True)
-market = None
-if auto:
-    try:
-        market=current_kalshi()
-        age=(datetime.now(timezone.utc)-datetime.fromisoformat(market['retrieved'])).total_seconds()
-        st.success(f"Market: {market['ticker']} • Snapshot age: {age:.0f} seconds • Data from Kalshi public API")
-    except Exception as exc:
-        st.warning(f'Kalshi auto-load unavailable: {exc}. No live quote or target is available. Turn off auto-load only to enter independently verified values.')
-if market:
-    target=market['target']
-    upask=market['upask']
-    downask=market['downask']
-    minutes=max(0,(datetime.fromisoformat(market['close'])-datetime.now(timezone.utc)).total_seconds()/60)
-    a,b,c,d=st.columns(4)
-    a.metric('Kalshi target',f'${target:,.2f}')
-    b.metric('UP ask',f'{upask:g}¢' if upask is not None else 'Unavailable')
-    c.metric('DOWN ask',f'{downask:g}¢' if downask is not None else 'Unavailable')
-    d.metric('Minutes remaining',f'{minutes:.2f}')
-    st.caption('Refresh live data in the sidebar for a new snapshot. This is NOT a continuously streaming quote. Verify the ticker and settlement rules in Kalshi.')
-else:
-    c1,c2,c3,c4=st.columns(4)
-    target=c1.number_input('Kalshi target (USD)',min_value=1.0,value=float(round(spot)),step=10.0,format='%.2f')
-    upask=c2.number_input('UP contract ask (¢)',min_value=1,max_value=99,value=50)
-    downask=c3.number_input('DOWN contract ask (¢)',min_value=1,max_value=99,value=50)
-    minutes=c4.number_input('Minutes until settlement',min_value=0.01,max_value=15.0,value=float(round(max(remaining,.01),2)),step=.25)
-volmult=st.slider('Volatility stress multiplier',.5,3.0,1.0,.1)
-if (auto and market is None) or upask is None or downask is None or minutes<=0:
-    st.warning('Verified live market data unavailable. Probability comparison is disabled until a valid Kalshi market is loaded or you switch to manual mode.')
-else:
-    st.caption('Fee estimates below use a simplified standard fee formula; verify the exact Kalshi fee for your order in the trade preview.')
-    feeup=fee_per_contract(upask)
-    feedown=fee_per_contract(downask)
-    pu=probability_up(spot,target,minutes,sigma*volmult)
-    pdwn=1-pu
-    result=pd.DataFrame([
-     {'Outcome':'UP','Model probability':pu,'Ask ($)':upask/100,'Estimated fee ($)':feeup/100,'Break-even probability':(upask+feeup)/100,'Model EV / contract ($)':pu-(upask+feeup)/100},
-     {'Outcome':'DOWN','Model probability':pdwn,'Ask ($)':downask/100,'Estimated fee ($)':feedown/100,'Break-even probability':(downask+feedown)/100,'Model EV / contract ($)':pdwn-(downask+feedown)/100},
-    ])
-    st.dataframe(result.style.format({'Model probability':'{:.1%}','Ask ($)':'${:.2f}','Estimated fee ($)':'${:.2f}','Break-even probability':'{:.1%}','Model EV / contract ($)':'${:+.3f}'}),hide_index=True,use_container_width=True)
-    st.warning('Model probabilities are UNVALIDATED. Coinbase spot differs from Kalshi’s settlement reference; apparent positive EV may be entirely spurious. Do not treat this table as a trading signal.')
+@st.fragment(run_every="3s")
+def live_kalshi_panel():
+    st.subheader('2. Live Kalshi target / probability model')
+    auto = st.toggle('Automatically load current Kalshi market', value=True)
+    market = None
+    if auto:
+        try:
+            market=current_kalshi()
+            age=(datetime.now(timezone.utc)-datetime.fromisoformat(market['retrieved'])).total_seconds()
+            st.success(f"Market: {market['ticker']} • Snapshot age: {age:.0f} seconds • Data from Kalshi public API")
+        except Exception as exc:
+            st.warning(f'Kalshi auto-load unavailable: {exc}. No live quote or target is available. Turn off auto-load only to enter independently verified values.')
+    if market:
+        target=market['target']
+        upask=market['upask']
+        downask=market['downask']
+        minutes=max(0,(datetime.fromisoformat(market['close'])-datetime.now(timezone.utc)).total_seconds()/60)
+        a,b,c,d=st.columns(4)
+        a.metric('Kalshi target',f'${target:,.2f}')
+        b.metric('UP ask',f'{upask:g}¢' if upask is not None else 'Unavailable')
+        c.metric('DOWN ask',f'{downask:g}¢' if downask is not None else 'Unavailable')
+        d.metric('Minutes remaining',f'{minutes:.2f}')
+        st.caption('Auto-refresh every 3 seconds while this page is open; this is polling, not a streaming feed. Quotes can change between updates. Verify market ticker and settlement rules on Kalshi.')
+    else:
+        c1,c2,c3,c4=st.columns(4)
+        target=c1.number_input('Kalshi target (USD)',min_value=1.0,value=float(round(spot)),step=10.0,format='%.2f')
+        upask=c2.number_input('UP contract ask (¢)',min_value=1,max_value=99,value=50)
+        downask=c3.number_input('DOWN contract ask (¢)',min_value=1,max_value=99,value=50)
+        minutes=c4.number_input('Minutes until settlement',min_value=0.01,max_value=15.0,value=float(round(max(remaining,.01),2)),step=.25)
+    volmult=st.slider('Volatility stress multiplier',.5,3.0,1.0,.1)
+    if (auto and market is None) or upask is None or downask is None or minutes<=0:
+        st.warning('Verified live market data unavailable. Probability comparison is disabled until a valid Kalshi market is loaded or you switch to manual mode.')
+    else:
+        st.caption('Fee estimates below use a simplified standard fee formula; verify the exact Kalshi fee for your order in the trade preview.')
+        feeup=fee_per_contract(upask)
+        feedown=fee_per_contract(downask)
+        try:
+            live_spot=ticker()
+        except Exception:
+            live_spot=spot
+            st.warning('Coinbase reference spot refresh failed; showing last available spot. Probability model may be stale.')
+        pu=probability_up(live_spot,target,minutes,sigma*volmult)
+        pdwn=1-pu
+        result=pd.DataFrame([
+         {'Outcome':'UP','Model probability':pu,'Ask ($)':upask/100,'Estimated fee ($)':feeup/100,'Break-even probability':(upask+feeup)/100,'Model EV / contract ($)':pu-(upask+feeup)/100},
+         {'Outcome':'DOWN','Model probability':pdwn,'Ask ($)':downask/100,'Estimated fee ($)':feedown/100,'Break-even probability':(downask+feedown)/100,'Model EV / contract ($)':pdwn-(downask+feedown)/100},
+        ])
+        st.dataframe(result.style.format({'Model probability':'{:.1%}','Ask ($)':'${:.2f}','Estimated fee ($)':'${:.2f}','Break-even probability':'{:.1%}','Model EV / contract ($)':'${:+.3f}'}),hide_index=True,use_container_width=True)
+        st.warning('Model probabilities are UNVALIDATED. Coinbase spot differs from Kalshi’s settlement reference; apparent positive EV may be entirely spurious. Do not treat this table as a trading signal.')
+
+
+live_kalshi_panel()
 
 st.subheader('3. Walk-forward historical test')
 st.write('For each completed 15-minute UTC window, we approximate the newly established target with the first available 1-minute candle close, then make a prediction 5 minutes into the window using only past data. This is a **proxy test**, not a backtest of actual Kalshi quotes or target rules.')
