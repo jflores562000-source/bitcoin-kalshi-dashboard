@@ -308,6 +308,274 @@ def live_target_crossing_panel():
 live_target_crossing_panel()
 
 # -----------------------------------------------------------------------------
+# Live 12/9/6/3-minute forecast audit — independent from legacy tracker.py.
+# Uses the SAME existing GitHub secret credentials, with a SEPARATE JSON log.
+# Only the explicit published Kalshi result is considered a verified outcome.
+# -----------------------------------------------------------------------------
+import base64
+import json
+from pathlib import Path
+
+CHECKPOINTS = (12, 9, 6, 3)
+CHECKPOINT_LOG_PATH = 'data/kalshi_checkpoint_predictions.json'
+CHECKPOINT_FALLBACK = Path('/tmp/kalshi_checkpoint_predictions.json')
+GITHUB_API_ROOT = 'https://api.github.com'
+
+
+def _checkpoint_credentials():
+    try:
+        token = str(st.secrets.get('GITHUB_LOG_TOKEN', ''))
+        repo = str(st.secrets.get('GITHUB_LOG_REPO', ''))
+        return token, repo
+    except Exception:
+        return '', ''
+
+
+def _checkpoint_store_read():
+    token, repo = _checkpoint_credentials()
+    if token and repo:
+        response = requests.get(
+            f'{GITHUB_API_ROOT}/repos/{repo}/contents/{CHECKPOINT_LOG_PATH}',
+            params={'ref': 'main'},
+            headers={'Authorization': f'Bearer {token}', 'Accept': 'application/vnd.github+json'},
+            timeout=12)
+        if response.status_code == 404:
+            return [], None, 'GitHub (persistent)'
+        response.raise_for_status()
+        obj = response.json()
+        rows = json.loads(base64.b64decode(obj['content']).decode('utf-8'))
+        if not isinstance(rows, list):
+            raise ValueError('Checkpoint log is not a JSON list')
+        return rows, obj['sha'], 'GitHub (persistent)'
+    if CHECKPOINT_FALLBACK.exists():
+        rows = json.loads(CHECKPOINT_FALLBACK.read_text())
+        if not isinstance(rows, list):
+            raise ValueError('Local checkpoint log is not a JSON list')
+        return rows, None, 'Temporary server file (not persistent)'
+    return [], None, 'Temporary server file (not persistent)'
+
+
+def _checkpoint_store_write(rows, sha):
+    token, repo = _checkpoint_credentials()
+    if token and repo:
+        body = {
+            'message': 'Update Bitcoin checkpoint forecast audit',
+            'branch': 'main',
+            'content': base64.b64encode(json.dumps(rows, allow_nan=False, indent=2).encode()).decode(),
+        }
+        if sha:
+            body['sha'] = sha
+        result = requests.put(
+            f'{GITHUB_API_ROOT}/repos/{repo}/contents/{CHECKPOINT_LOG_PATH}',
+            headers={'Authorization': f'Bearer {token}', 'Accept': 'application/vnd.github+json'},
+            json=body, timeout=15)
+        result.raise_for_status()
+    else:
+        CHECKPOINT_FALLBACK.write_text(json.dumps(rows, allow_nan=False, indent=2))
+
+
+def _checkpoint_row(mkt, spot_price, vol, time_utc, checkpoint):
+    """Make a pre-settlement snapshot; never reconstruct a missed checkpoint."""
+    close_utc = datetime.fromisoformat(mkt['close'])
+    actual_minutes = (close_utc - time_utc).total_seconds() / 60
+    if not checkpoint - 0.60 <= actual_minutes <= checkpoint:
+        return None
+    target = float(mkt['target'])
+    if not (math.isfinite(spot_price) and math.isfinite(target) and
+            math.isfinite(vol) and vol > 0 and spot_price > 0 and target > 0):
+        return None
+    if spot_price == target:
+        return None
+    p_touch, p_opposite = _model_target_odds(spot_price, target, actual_minutes, vol)
+    if not (math.isfinite(p_touch) and math.isfinite(p_opposite)):
+        return None
+    above = spot_price > target
+    p_up = 1 - p_opposite if above else p_opposite
+    return {
+        'ticker': str(mkt['ticker']),
+        'checkpoint_minutes': int(checkpoint),
+        'observed_utc': time_utc.isoformat(),
+        'close_utc': close_utc.isoformat(),
+        'actual_minutes_remaining': round(actual_minutes, 3),
+        'kalshi_target': round(target, 2),
+        'coinbase_spot': round(float(spot_price), 2),
+        'distance_from_target': round(spot_price - target, 2),
+        'model_volatility_1m': round(float(vol), 9),
+        'model_p_up': round(p_up, 6),
+        'model_p_touch': round(p_touch, 6),
+        'spot_side_up': int(above),
+        'actual_up': None,
+        'settlement_checked_utc': None,
+    }
+
+
+def _checkpoint_settlement(ticker):
+    """Only use final YES/NO as published by the Kalshi public API."""
+    response = requests.get(
+        f'https://external-api.kalshi.com/trade-api/v2/markets/{ticker}',
+        headers=HEAD, timeout=12)
+    response.raise_for_status()
+    outcome = str(response.json().get('market', {}).get('result') or '').lower()
+    if outcome == 'yes':
+        return 1
+    if outcome == 'no':
+        return 0
+    return None
+
+
+def _checkpoint_update(rows, market, spot_price, vol, now_utc):
+    """Return changed rows and an explanation; isolated for deterministic tests."""
+    changed = False
+    notes = []
+    if market is not None:
+        for checkpoint in CHECKPOINTS:
+            if any(r.get('ticker') == market['ticker'] and
+                   r.get('checkpoint_minutes') == checkpoint for r in rows):
+                continue
+            new_row = _checkpoint_row(market, spot_price, vol, now_utc, checkpoint)
+            if new_row is not None:
+                rows.append(new_row)
+                changed = True
+                notes.append(f'Saved {checkpoint}-minute forecast')
+
+    # Resolve at most 3 DISTINCT markets per refresh, once final results are published.
+    # One API read can resolve all four checkpoint observations for a market.
+    unresolved = {}
+    for item in rows:
+        if item.get('actual_up') is not None or not item.get('close_utc'):
+            continue
+        close_utc = datetime.fromisoformat(item['close_utc'])
+        if now_utc < close_utc + timedelta(seconds=60):
+            continue
+        last = item.get('settlement_checked_utc')
+        if last and (now_utc - datetime.fromisoformat(last)).total_seconds() < 180:
+            continue
+        unresolved[item['ticker']] = True
+    for market_ticker in list(unresolved)[:3]:
+        try:
+            outcome = _checkpoint_settlement(market_ticker)
+        except requests.RequestException:
+            continue
+        for item in rows:
+            if item.get('ticker') != market_ticker or item.get('actual_up') is not None:
+                continue
+            item['settlement_checked_utc'] = now_utc.isoformat()
+            if outcome is not None:
+                item['actual_up'] = outcome
+            changed = True
+        if outcome is not None:
+            notes.append(f'Verified settlement: {market_ticker}')
+    return changed, notes
+
+
+def _checkpoint_report(rows):
+    """Summarize exactly the logged, subsequently verified snapshots."""
+    table = pd.DataFrame(rows)
+    records = []
+    if table.empty:
+        return table, pd.DataFrame()
+    for checkpoint in CHECKPOINTS:
+        group = table[(table['checkpoint_minutes'] == checkpoint) &
+                      table['actual_up'].notna()].copy()
+        n = len(group)
+        if n:
+            prob = pd.to_numeric(group['model_p_up'], errors='coerce')
+            actual = pd.to_numeric(group['actual_up'], errors='coerce')
+            valid = prob.notna() & actual.notna() & prob.between(0, 1)
+            group = group[valid]
+            prob = prob[valid]
+            actual = actual[valid]
+            n = len(group)
+        right = int(((prob >= 0.5).astype(int) == actual).sum()) if n else 0
+        brier = float(((prob - actual)**2).mean()) if n else float('nan')
+        records.append({'Time remaining': f'{checkpoint} min',
+                        'Verified': n, 'Correct': right,
+                        'Accuracy': f'{right/n:.1%}' if n else '—',
+                        'Brier': f'{brier:.3f}' if n else '—',
+                        'Data quality': 'Early sample' if n < 100 else 'Growing sample'})
+    return table, pd.DataFrame(records)
+
+
+@st.fragment(run_every='10s')
+def checkpoint_accuracy_panel():
+    st.subheader('2B. Live prediction accuracy by checkpoint')
+    st.caption('Records real-time forecasts at 12, 9, 6 and 3 minutes before close, '
+               'then verifies against the Kalshi-published YES/NO result. '
+               'If the app is inactive, missed checkpoints are NOT backfilled.')
+    try:
+        rows, sha, location = _checkpoint_store_read()
+    except Exception as exc:
+        st.error(f'Could not load checkpoint research log: {exc}')
+        return
+    st.caption('Storage: ' + location)
+    if 'not persistent' in location:
+        st.warning('This research log is temporary until the existing GitHub logging secrets are configured.')
+    live_market = None
+    try:
+        live_market = current_kalshi()
+        current_spot = ticker()
+        hist = candles(days)
+        age = (datetime.now(timezone.utc) - hist.index[-1].to_pydatetime()).total_seconds()
+        if age > 240:
+            raise ValueError('Volatility history is stale')
+        v15 = estimated_sigma(hist, 15)
+        v60 = estimated_sigma(hist, max(60, lookback))
+        if not (math.isfinite(v15) and math.isfinite(v60) and v15 > 0 and v60 > 0):
+            raise ValueError('Volatility estimate unavailable')
+        vol = 0.6*v15 + 0.4*v60
+        now_utc = datetime.now(timezone.utc)
+    except Exception as exc:
+        live_market = None
+        current_spot = float('nan')
+        vol = float('nan')
+        now_utc = datetime.now(timezone.utc)
+        st.caption(f'Live checkpoint capture currently unavailable: {exc}')
+    changed, notes = _checkpoint_update(rows, live_market, current_spot, vol, now_utc)
+    if changed:
+        try:
+            _checkpoint_store_write(rows, sha)
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code in (409, 422):
+                st.warning('Another browser updated this log simultaneously. This update was not saved; reload the page to retry.')
+            else:
+                st.warning(f'Prediction snapshot could not be saved: {exc}')
+        except Exception as exc:
+            st.warning(f'Prediction snapshot could not be saved: {exc}')
+    if notes:
+        st.caption(' • '.join(notes))
+    table, report = _checkpoint_report(rows)
+    if report.empty:
+        st.info('No checkpoint predictions saved yet. Leave this dashboard open during a cycle to begin collecting them.')
+    else:
+        st.dataframe(report, hide_index=True, use_container_width=True)
+        if table['actual_up'].notna().any():
+            settled = table[table['actual_up'].notna()].copy()
+            settled['p_bucket'] = pd.cut(pd.to_numeric(settled['model_p_up']),
+                                         bins=[0,.2,.4,.6,.8,1], include_lowest=True)
+            calib = settled.groupby('p_bucket', observed=False).agg(
+                n=('actual_up','size'),
+                predicted_up=('model_p_up','mean'),
+                actual_up=('actual_up','mean')).reset_index()
+            st.write('**Are the probability percentages calibrated?**')
+            st.dataframe(calib, hide_index=True, use_container_width=True)
+            st.caption('Calibration: when predictions average 80% UP, about 80% should finish UP over many independent markets. '
+                       'The same market contributes multiple checkpoint rows, so do not treat them as independent observations.')
+        st.write('**Most recent checkpoint forecasts**')
+        st.dataframe(table.tail(20).iloc[::-1], hide_index=True, use_container_width=True)
+        st.download_button('Download checkpoint accuracy CSV',
+                           table.to_csv(index=False).encode(),
+                           file_name='bitcoin_checkpoint_accuracy_log.csv', mime='text/csv',
+                           key='checkpoint_audit_csv')
+    st.warning('Research only. This driftless model always favors the side where Coinbase is currently trading relative to the target. '
+               'Raw directional accuracy therefore does NOT prove predictive skill. The important test is probability calibration '
+               'against actual Kalshi outcomes. Coinbase is not the CF Benchmarks BRTI settlement source.')
+    st.caption('Tracking depends on an active Streamlit browser session. Closing the tab, sleeping the computer, '
+               'or browser tab throttling can prevent new observations. Verified settlement checks resume when the page runs again.')
+
+
+checkpoint_accuracy_panel()
+
+# -----------------------------------------------------------------------------
 # Historical swing / reversal research (Coinbase OHLC candles, not Kalshi odds)
 # -----------------------------------------------------------------------------
 SWING_HORIZONS = (12, 9, 6, 3)
