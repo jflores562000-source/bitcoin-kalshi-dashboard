@@ -214,6 +214,100 @@ def live_kalshi_panel():
 live_kalshi_panel()
 
 # -----------------------------------------------------------------------------
+# Live target crossing estimates. These use actual market TARGET from Kalshi,
+# but a Coinbase spot price and simplified stochastic model, NOT the BRTI index.
+# They are research estimates, not validated real-world settlement probabilities.
+# -----------------------------------------------------------------------------
+def _model_target_odds(reference_price, target, minutes_left, volatility_1m):
+    """Approximate probability of touching strike and settling on opposite side.
+
+    Under a driftless log Brownian model with minute-scale log-volatility:
+      P(touch) = 2 Phi(-abs(log(S/K)) / (sigma*sqrt(T)))
+    The final-minute settlement approximation uses the variance of the mean
+    Brownian level over [T-1, T], which is sigma^2*(T-2/3). This approximates
+    the 60-second average of a spot/index, not actual CF BRTI settlement.
+    """
+    values = (reference_price, target, minutes_left, volatility_1m)
+    if not all(math.isfinite(x) for x in values):
+        return (float('nan'), float('nan'))
+    if reference_price <= 0 or target <= 0 or minutes_left <= 0 or volatility_1m <= 0:
+        return (float('nan'), float('nan'))
+    log_gap = abs(math.log(reference_price / target))
+    touch_z = log_gap / (volatility_1m * math.sqrt(minutes_left))
+    p_touch = math.erfc(touch_z / math.sqrt(2))
+    if minutes_left < 1.0:
+        # Previous BRTI values, which we don't have, already affect the final
+        # 60-second average; do not invent a settlement probability.
+        return (p_touch, float('nan'))
+    avg_z = log_gap / (volatility_1m * math.sqrt(minutes_left - 2/3))
+    p_opposite = 0.5 * math.erfc(avg_z / math.sqrt(2))
+    return (min(1.0,max(0.0,p_touch)), min(1.0,max(0.0,p_opposite)))
+
+
+@st.fragment(run_every='10s')
+def live_target_crossing_panel():
+    st.subheader('2A. Live Kalshi target-crossing estimates (experimental)')
+    st.caption('Two different events: touching the target ANY time before close, versus FINISHING on the opposite side. These probabilities are a simplified model, not validated Kalshi odds.')
+    try:
+        mkt = current_kalshi()
+        price = ticker()
+        target = float(mkt['target'])
+        close_time = datetime.fromisoformat(mkt['close'])
+        remaining_live = (close_time - datetime.now(timezone.utc)).total_seconds() / 60
+        if not 0 < remaining_live <= 15:
+            raise ValueError('Current market is no longer active')
+        hist_candles = candles(days)
+        candle_age = (datetime.now(timezone.utc) - hist_candles.index[-1].to_pydatetime()).total_seconds()
+        if candle_age > 240:
+            raise ValueError('Historical volatility feed is stale')
+        # Recent volatility reacts to conditions; 60m is the steadier reference.
+        vol_recent = estimated_sigma(hist_candles, 15)
+        vol_reference = estimated_sigma(hist_candles, max(60,lookback))
+        if not (math.isfinite(vol_recent) and math.isfinite(vol_reference) and vol_recent > 0 and vol_reference > 0):
+            raise ValueError('Not enough valid recent volatility observations')
+        # A simple transparent blend; calibration must be checked out of sample.
+        vol_base = 0.6 * vol_recent + 0.4 * vol_reference
+        delta = price - target
+        touch, opposite = _model_target_odds(price,target,remaining_live,vol_base)
+        state_side = 'UP' if delta > 0 else 'DOWN' if delta < 0 else 'AT TARGET'
+        opposite_side = 'DOWN' if delta > 0 else 'UP' if delta < 0 else 'EITHER'
+        a,b,c = st.columns(3)
+        a.metric('Coinbase vs. Kalshi target', f'${delta:+,.2f}')
+        b.metric('Time left', f'{remaining_live:.1f} min')
+        c.metric('Currently above/below', state_side)
+        d,e = st.columns(2)
+        d.metric('Model: touch or cross target', f'{touch:.1%}' if math.isfinite(touch) else 'Unavailable')
+        e.metric(f'Model: finish {opposite_side}', f'{opposite:.1%}' if math.isfinite(opposite) else 'Unavailable')
+        if remaining_live < 1:
+            st.warning('Less than 60 seconds remain. The model cannot estimate the final 60-second benchmark average from spot alone, so settlement probability is unavailable.')
+        vol_quiet = min(vol_recent,vol_reference)
+        vol_active = max(vol_recent,vol_reference)
+        quiet_touch, quiet_settle = _model_target_odds(price,target,remaining_live,vol_quiet)
+        active_touch, active_settle = _model_target_odds(price,target,remaining_live,vol_active)
+        if math.isfinite(quiet_settle) and math.isfinite(active_settle):
+            st.caption(f'Volatility sensitivity: with recent 15m versus 60m volatility, modeled FINISH-OPPOSITE estimates range {min(quiet_settle,active_settle):.1%}–{max(quiet_settle,active_settle):.1%}. This is not a statistical confidence interval.')
+        st.write('**If the present price/target gap stayed the same at each checkpoint:**')
+        rows=[]
+        for horizon in (12,9,6,3):
+            if horizon > remaining_live + 0.1:
+                continue   # Only future states that may still occur in this cycle.
+            pt,po = _model_target_odds(price,target,float(horizon),vol_base)
+            rows.append({'Minutes remaining': horizon,
+                         'Touch/cross target (model)': f'{pt:.1%}',
+                         f'Finish {opposite_side} (model)': f'{po:.1%}'})
+        if rows:
+            st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
+        else:
+            st.caption('Next checkpoint is below 3 minutes. Use current estimate above.')
+        st.warning('EXPERIMENTAL / NOT CALIBRATED: Live target is from Kalshi, but starting price and volatility are from Coinbase. Kalshi BTC 15m contracts use the last-minute average of CF Benchmarks BRTI, not Coinbase spot. The model assumes driftless, smoothly distributed changes and can be badly wrong during jumps or index discrepancies. Treat as research, not a wager recommendation.')
+        st.caption(f'Kalshi market: {mkt["ticker"]}. Coinbase-based 1-minute volatility: recent 15m = {100*vol_recent:.3f}%/√min; reference 60m = {100*vol_reference:.3f}%/√min. Model refreshes while page remains active.')
+    except Exception as exc:
+        st.info(f'Live target-crossing model unavailable: {exc}. The historical research further down the page is unaffected.')
+
+
+live_target_crossing_panel()
+
+# -----------------------------------------------------------------------------
 # Historical swing / reversal research (Coinbase OHLC candles, not Kalshi odds)
 # -----------------------------------------------------------------------------
 SWING_HORIZONS = (12, 9, 6, 3)
