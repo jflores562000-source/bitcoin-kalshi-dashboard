@@ -213,7 +213,195 @@ def live_kalshi_panel():
 
 live_kalshi_panel()
 
-st.subheader('3. Walk-forward historical test')
+# -----------------------------------------------------------------------------
+# Historical swing / reversal research (Coinbase OHLC candles, not Kalshi odds)
+# -----------------------------------------------------------------------------
+SWING_HORIZONS = (12, 9, 6, 3)
+SWING_DOLLARS = (25, 50, 75, 100, 150)
+
+@st.cache_data(ttl=90, show_spinner=False)
+def swing_window_history(candle_data):
+    """Return independent snapshots at 12/9/6/3 minutes from cycle end.
+
+    Minute-bar index is candle OPEN time, so a bar at S+2 has a CLOSE at S+3,
+    i.e., exactly 12 minutes before the end of the S to S+15 interval.
+    Only *completed* 15-minute cycles with every 1-min bar are included.
+
+    Historical target is a proxy: first 1-minute Coinbase candle CLOSE.
+    Actual Kalshi target and settlement index may differ.
+    """
+    clean = candle_data.sort_index()
+    if clean.empty:
+        return pd.DataFrame()
+    idx = clean.index
+    end_of_last_complete_bar = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    starts = pd.date_range(idx.min().ceil('15min'),
+                           idx.max().floor('15min'), freq='15min', tz='UTC')
+    records = []
+    for start in starts:
+        # Don't use a partial final bar (or a still-open 15-minute cycle).
+        if start.to_pydatetime() + timedelta(minutes=15) > end_of_last_complete_bar:
+            continue
+        times = pd.date_range(start, periods=15, freq='min')
+        if not times.isin(idx).all():
+            continue
+        segment = clean.loc[times]
+        target_proxy = float(segment['close'].iloc[0])
+        finish = float(segment['close'].iloc[-1])
+        if not np.isfinite([target_proxy, finish]).all():
+            continue
+        for mins in SWING_HORIZONS:
+            current_idx = 14 - mins   # e.g. mins=12 -> bar S+2 closes at S+3
+            here = float(segment['close'].iloc[current_idx])
+            future = segment.iloc[current_idx + 1:]
+            if (not np.isfinite(here) or future.empty or
+                    not np.isfinite(future[['high', 'low', 'close']].to_numpy()).all()):
+                continue
+            abs_move_to_finish = abs(finish - here)
+            max_up = float(future['high'].max()) - here
+            max_down = here - float(future['low'].min())
+            # Ended strictly across the proxy target, not a temporary touch.
+            if here == target_proxy or finish == target_proxy:
+                reversed_at_close = np.nan
+            else:
+                reversed_at_close = int((here > target_proxy) != (finish > target_proxy))
+            records.append({
+                'window_start_utc': start,
+                'minutes_left': mins,
+                'price_at_checkpoint': here,
+                'proxy_target': target_proxy,
+                'price_at_finish': finish,
+                'distance_from_proxy_target': abs(here - target_proxy),
+                'side_at_checkpoint': 'UP' if here > target_proxy else ('DOWN' if here < target_proxy else 'AT TARGET'),
+                'absolute_close_to_close_move': abs_move_to_finish,
+                'max_favorable_up_move': max_up,
+                'max_favorable_down_move': max_down,
+                'max_either_direction_move': max(max_up, max_down),
+                'opposite_side_at_finish': reversed_at_close,
+            })
+    return pd.DataFrame.from_records(records)
+
+
+def swing_rate_table(history, measure):
+    """Unconditional historical touch or close-to-close movement percentages."""
+    result = []
+    metric = ('max_either_direction_move' if measure == 'touch' else
+              'absolute_close_to_close_move')
+    for mins in SWING_HORIZONS:
+        sample = history.loc[history['minutes_left'] == mins] if not history.empty else pd.DataFrame()
+        row = {'Time left': f'{mins} min', 'Cycles': len(sample)}
+        for amount in SWING_DOLLARS:
+            n = len(sample)
+            wins = int((sample[metric] >= amount).sum()) if n else 0
+            row[f'\u2265${amount}'] = f'{wins/n:.1%} ({wins}/{n})' if n else 'No data'
+        result.append(row)
+    return pd.DataFrame(result)
+
+
+def reversal_by_distance_table(history, minutes_left):
+    """Descriptive frequencies in distance bands, not calibrated odds."""
+    sample = history.loc[(history['minutes_left'] == minutes_left) &
+                         history['opposite_side_at_finish'].notna()]
+    bands = [(0,25), (25,50), (50,75), (75,100), (100,150), (150,float('inf'))]
+    rows = []
+    for left, right in bands:
+        grp = sample.loc[(sample['distance_from_proxy_target'] >= left) &
+                         (sample['distance_from_proxy_target'] < right)]
+        n = len(grp)
+        flipped = int(grp['opposite_side_at_finish'].sum()) if n else 0
+        band_label = f'${left}–${right}' if math.isfinite(right) else '$150+'
+        rows.append({'Distance from target (proxy)': band_label,
+                     'Reversed / observed': f'{flipped}/{n}',
+                     'Observed reversal frequency': (f'{flipped/n:.1%}' if n else 'No data'),
+                     'Sample quality': 'Small sample' if 0 < n < 30 else ('No data' if n == 0 else 'Preliminary')})
+    return pd.DataFrame(rows)
+
+
+@st.fragment(run_every='15s')
+def swing_research_panel():
+    st.subheader('3. Bitcoin swing & target-reversal research')
+    st.write('At **12, 9, 6, or 3 minutes remaining**, see how frequently Bitcoin historically moved another $25–$150 before the cycle ended. This is Coinbase price history, **not verified Kalshi settlement history**.')
+    # Refresh candle history within this fragment (the cache expires every 90 seconds).
+    hist = swing_window_history(candles(days))
+    if hist.empty:
+        st.warning('Not enough complete 1-minute price candles to measure swings. Try 2–7 historical days.')
+        return
+    period = st.selectbox('Which recent history should we compare?',
+        ['All loaded days', 'Last 24 hours', 'Last 6 hours', 'Last 1 hour'], index=0,
+        key='swing_history_period')
+    hours = {'Last 24 hours': 24, 'Last 6 hours': 6, 'Last 1 hour': 1}.get(period)
+    if hours is not None:
+        earliest = pd.Timestamp.now(tz='UTC') - pd.Timedelta(hours=hours)
+        hist = hist.loc[hist['window_start_utc'] >= earliest]
+    if hist.empty:
+        st.warning('No complete cycles in that time range. Choose a longer history.')
+        return
+    n_cycles = hist.window_start_utc.nunique()
+    if n_cycles < 30:
+        st.warning(f'Only {n_cycles} completed cycles in this time range. Percentages are descriptive and too sparse to trust as predictive odds.')
+
+    # These are different events: crossing a level at *any time* vs FINISHING there.
+    metric_name = st.radio('What should count as a swing?',
+        ('Touch the amount before cycle ends', 'Finish at least that far away'),
+        horizontal=True, key='swing_metric_choice')
+    measure = 'touch' if metric_name.startswith('Touch') else 'finish'
+    st.dataframe(swing_rate_table(hist, measure), hide_index=True, use_container_width=True)
+    if measure == 'touch':
+        st.caption('Example: $100 means price reached at least $100 ABOVE OR BELOW its checkpoint price at any moment before the end. This can happen even if the price later returns.')
+    else:
+        st.caption('Example: $100 means the end-of-cycle Coinbase price was at least $100 higher or lower than the checkpoint price.')
+    st.caption(f'Sample: {hist.window_start_utc.nunique()} complete cycles. One observation per cycle at each checkpoint; 1-minute Coinbase candles include highs and lows. Rounded historical frequencies are not guarantees or validated forecasts.')
+
+    st.markdown('**How often did Bitcoin finish on the opposite side of its target?**')
+    st.caption('This second table concerns target reversals, not just a $25/$50 price movement. Historical targets are Coinbase approximations, not actual Kalshi targets.')
+    selected = st.selectbox('Minutes remaining for target reversal table',
+                             options=list(SWING_HORIZONS), index=2, format_func=lambda v: f'{v} minutes', key='reversal_time_select')
+    st.dataframe(reversal_by_distance_table(hist, selected),
+                 hide_index=True, use_container_width=True)
+
+    # Live snapshot: report distance and the nearest historical checkpoint. Avoid
+    # presenting descriptive rates as current Kalshi settlement probabilities.
+    st.markdown('**Current market comparison**')
+    try:
+        live_market = current_kalshi()
+        live_price = ticker()
+        end = datetime.fromisoformat(live_market['close'])
+        mins_left = (end - datetime.now(timezone.utc)).total_seconds() / 60
+        if mins_left <= 0 or mins_left > 15:
+            raise ValueError('No active 15-minute market')
+        distance = live_price - float(live_market['target'])
+        closest_horizon = min(SWING_HORIZONS, key=lambda m: abs(m-mins_left))
+        c1, c2, c3 = st.columns(3)
+        c1.metric('Above / below Kalshi target*', f'${distance:+,.2f}')
+        c2.metric('Time left', f'{mins_left:.1f} min')
+        c3.metric('Nearest research checkpoint', f'{closest_horizon} min')
+        historical_checkpoint = hist.loc[(hist['minutes_left'] == closest_horizon) &
+            hist['opposite_side_at_finish'].notna()]
+        gap = abs(distance)
+        bands = [(0, 25), (25, 50), (50, 75), (75, 100), (100, 150), (150, float('inf'))]
+        bucket_low, bucket_high = next((low, high) for low, high in bands if low <= gap < high)
+        comparable = historical_checkpoint.loc[
+            (historical_checkpoint['distance_from_proxy_target'] >= bucket_low) &
+            (historical_checkpoint['distance_from_proxy_target'] < bucket_high)]
+        n_comp = len(comparable)
+        flipped_comp = int(comparable['opposite_side_at_finish'].sum()) if n_comp else 0
+        label = f'${bucket_low}–${bucket_high}' if math.isfinite(bucket_high) else '$150+'
+        if n_comp >= 30:
+            st.write(f'**Similar historical distances ({label}, {closest_horizon} min left):** {flipped_comp}/{n_comp} finished across the proxy target ({flipped_comp/n_comp:.1%} observed).')
+        else:
+            st.write(f'**Similar historical distances ({label}, {closest_horizon} min left):** {flipped_comp}/{n_comp} crossed by settlement. **Insufficient observations for dependable odds.**')
+        st.caption('*Distance uses Coinbase spot versus Kalshi target; sources may differ. The comparable history uses proxy targets, not Kalshi target records. The selected checkpoint may differ from the actual remaining time. This does not predict the outcome of the current Kalshi market.')
+    except Exception as exc:
+        st.info('Live comparison unavailable until the current Kalshi target and Coinbase price can both be retrieved. Historical tables still work.')
+
+    st.download_button('Download swing research CSV',
+        hist.to_csv(index=False).encode('utf-8'),
+        file_name='bitcoin_swing_history.csv', mime='text/csv', key='download_swing_history')
+
+
+swing_research_panel()
+
+st.subheader('4. Walk-forward historical test')
 st.write('For each completed 15-minute UTC window, we approximate the newly established target with the first available 1-minute candle close, then make a prediction 5 minutes into the window using only past data. This is a **proxy test**, not a backtest of actual Kalshi quotes or target rules.')
 @st.cache_data(show_spinner=False)
 def backtest(data,lookback,threshold):
@@ -259,7 +447,7 @@ else:
     st.dataframe(bt.tail(30).iloc[::-1],hide_index=True,use_container_width=True)
     st.download_button('Download proxy backtest CSV',bt.to_csv(index=False).encode(),file_name='btc_15m_proxy_backtest.csv',mime='text/csv')
 
-st.subheader('4. Optional actual Kalshi trade log')
+st.subheader('5. Optional actual Kalshi trade log')
 st.write('Upload your own historical trade log to measure REAL net profit/loss. CSV columns: `outcome` (UP or DOWN), `won` (1 or 0), `ask_cents`, `fee_cents`, `contracts`. Include only settled positions. Fees should include the actual amount paid.')
 up=st.file_uploader('Historical Kalshi positions CSV',type=['csv'])
 if up is not None:
