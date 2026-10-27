@@ -7,6 +7,7 @@ import pandas as pd
 import requests
 import streamlit as st
 import tracker
+import auto_sell_research
 
 st.set_page_config(page_title='BTC / Kalshi 15m Lab', layout='wide', initial_sidebar_state='collapsed')
 st.title('₿ Bitcoin / Kalshi 15-Minute Lab')
@@ -112,6 +113,8 @@ def current_kalshi():
                     if match: strike = _number(match.group(1).replace(',',''))
                 upask = _cents(m,'yes_ask_dollars','yes_ask')
                 downask = _cents(m,'no_ask_dollars','no_ask')
+                upbid = _cents(m,'yes_bid_dollars','yes_bid')
+                downbid = _cents(m,'no_bid_dollars','no_bid')
                 if not strike or strike <= 0:
                     diagnostics.append(event_ticker + ': target unpublished')
                     continue
@@ -119,7 +122,7 @@ def current_kalshi():
                     diagnostics.append(event_ticker + ': quotes unavailable')
                     continue
                 return {'ticker':m['ticker'],'target':strike,'close':close.isoformat(),
-                        'upask':upask,'downask':downask,'retrieved':now.isoformat()}
+                        'upask':upask,'downask':downask,'upbid':upbid,'downbid':downbid,'retrieved':now.isoformat()}
             if not markets: diagnostics.append(event_ticker + ': no nested markets')
         except (requests.RequestException, ValueError, KeyError) as exc:
             diagnostics.append(event_ticker + ': ' + str(exc)[:120])
@@ -149,7 +152,7 @@ change5=(spot/float(df['close'].iloc[-6])-1)*100 if len(df)>6 else float('nan')
 change15=(spot/float(df['close'].iloc[-16])-1)*100 if len(df)>16 else float('nan')
 
 # Two tabs keep the live question visible without deleting prior research.
-simple_tab, research_tab = st.tabs(['🎯 Live direction', '📊 Research & history'])
+simple_tab, research_tab = st.tabs(['🎯 Shortcut / Live', '📊 Research & history'])
 
 with simple_tab:
     @st.fragment(run_every='10s')
@@ -212,16 +215,7 @@ with simple_tab:
 
     simple_direction_view()
 
-with research_tab:
-    st.subheader('1. Live BTC monitor')
-    a,b,c,d=st.columns(4)
-    a.metric('Coinbase BTC/USD',f'${spot:,.2f}')
-    b.metric('5-minute move',f'{change5:+.3f}%')
-    c.metric('15-minute move',f'{change15:+.3f}%')
-    d.metric('Current UTC window ends',window_end.strftime('%H:%M UTC'),f'{remaining:.1f} min remaining',delta_color='off')
-    st.line_chart(df['close'].tail(120),height=250)
-    st.caption('Coinbase BTC-USD is a reference spot feed, NOT necessarily the exact price source, timestamp, or settlement rule used by Kalshi. Confirm the market rules before using any estimate.')
-
+    # Section 2 appears on the shortcut tab.
     @st.fragment(run_every="3s")
     def live_kalshi_panel():
         st.subheader('2. Live Kalshi target / probability model')
@@ -277,6 +271,27 @@ with research_tab:
 
 
     live_kalshi_panel()
+
+
+    @st.fragment(run_every='10s')
+    def auto_sell_panel():
+        try:
+            quote_market = current_kalshi()
+        except Exception:
+            quote_market = None
+        auto_sell_research.render(quote_market)
+
+    auto_sell_panel()
+
+with research_tab:
+    st.subheader('1. Live BTC monitor')
+    a,b,c,d=st.columns(4)
+    a.metric('Coinbase BTC/USD',f'${spot:,.2f}')
+    b.metric('5-minute move',f'{change5:+.3f}%')
+    c.metric('15-minute move',f'{change15:+.3f}%')
+    d.metric('Current UTC window ends',window_end.strftime('%H:%M UTC'),f'{remaining:.1f} min remaining',delta_color='off')
+    st.line_chart(df['close'].tail(120),height=250)
+    st.caption('Coinbase BTC-USD is a reference spot feed, NOT necessarily the exact price source, timestamp, or settlement rule used by Kalshi. Confirm the market rules before using any estimate.')
 
     # -----------------------------------------------------------------------------
     # Live target crossing estimates. These use actual market TARGET from Kalshi,
