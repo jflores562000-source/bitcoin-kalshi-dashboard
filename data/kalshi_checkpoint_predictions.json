@@ -2764,8 +2764,8 @@
     "model_p_up": 0.736005,
     "model_p_touch": 0.539692,
     "spot_side_up": 1,
-    "actual_up": null,
-    "settlement_checked_utc": null
+    "actual_up": 0,
+    "settlement_checked_utc": "2026-10-28T00:03:32.463069+00:00"
   },
   {
     "ticker": "KXBTC15M-26OCT272000-00",
@@ -2780,8 +2780,8 @@
     "model_p_up": 0.442636,
     "model_p_touch": 0.889662,
     "spot_side_up": 0,
-    "actual_up": null,
-    "settlement_checked_utc": null
+    "actual_up": 0,
+    "settlement_checked_utc": "2026-10-28T00:03:32.463069+00:00"
   },
   {
     "ticker": "KXBTC15M-26OCT272000-00",
@@ -2796,8 +2796,8 @@
     "model_p_up": 0.394098,
     "model_p_touch": 0.800074,
     "spot_side_up": 0,
-    "actual_up": null,
-    "settlement_checked_utc": null
+    "actual_up": 0,
+    "settlement_checked_utc": "2026-10-28T00:03:32.463069+00:00"
   },
   {
     "ticker": "KXBTC15M-26OCT272000-00",
@@ -2811,6 +2811,22 @@
     "model_volatility_1m": 0.000310654,
     "model_p_up": 0.233549,
     "model_p_touch": 0.522071,
+    "spot_side_up": 0,
+    "actual_up": 0,
+    "settlement_checked_utc": "2026-10-28T00:03:32.463069+00:00"
+  },
+  {
+    "ticker": "KXBTC15M-26OCT272015-15",
+    "checkpoint_minutes": 12,
+    "observed_utc": "2026-10-28T00:03:32.463069+00:00",
+    "close_utc": "2026-10-28T00:15:00+00:00",
+    "actual_minutes_remaining": 11.459,
+    "kalshi_target": 80806.43,
+    "coinbase_spot": 80712.58,
+    "distance_from_target": -93.85,
+    "model_volatility_1m": 0.000295731,
+    "model_p_up": 0.115819,
+    "model_p_touch": 0.245709,
     "spot_side_up": 0,
     "actual_up": null,
     "settlement_checked_utc": null
