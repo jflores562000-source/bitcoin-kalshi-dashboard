@@ -1,6 +1,8 @@
 """Kalshi public quote recorder and early-cycle hypothetical exit research. No trading."""
 import base64
 import json
+import math
+import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import pandas as pd
@@ -126,6 +128,59 @@ def analyze(rows):
     return pd.DataFrame(results)
 
 
+def fee_cents(price_cents):
+    """Kalshi general trading fee for ONE contract, in cents: ceil(0.07 * P * (1 - P)).
+    Same formula app.py uses. Confirm the exact fee in Kalshi's trade preview."""
+    p = float(price_cents) / 100
+    return math.ceil(0.07 * p * (1 - p) * 100 - 1e-12)
+
+
+def kalshi_result(ticker):
+    """Kalshi's published result for a finished market: 1 = UP (yes) won, 0 = DOWN (no) won, None = not published yet."""
+    r = requests.get(f'https://external-api.kalshi.com/trade-api/v2/markets/{ticker}', timeout=8)
+    r.raise_for_status()
+    result = str(r.json().get('market', {}).get('result') or '').lower()
+    return {'yes': 1, 'no': 0}.get(result)
+
+
+def load_outcomes(tickers, max_new=5):
+    """Look up Kalshi results a few at a time (the page refreshes every few seconds).
+    Finished results never change, so each one is kept for the rest of the browser session."""
+    store = st.session_state.setdefault('kalshi_outcomes', {})
+    checked = st.session_state.setdefault('kalshi_outcomes_checked', {})
+    now, fetched = time.time(), 0
+    for ticker in tickers:
+        if store.get(ticker) is not None or fetched >= max_new or now - checked.get(ticker, 0) < 90:
+            continue
+        checked[ticker] = now
+        fetched += 1
+        try:
+            store[ticker] = kalshi_result(ticker)
+        except Exception:
+            pass  # try again in 90 seconds; never break the page
+    return {t: v for t, v in store.items() if v is not None}
+
+
+def add_net_returns(results, outcomes):
+    """Adds what the bid-touch table leaves out: the real result of every trade, after fees.
+
+    Hit  -> sold at the target:   target - entry ask - buy fee - sell fee
+    Miss -> held to settlement:   (100 if that side won else 0) - entry ask - buy fee   (no fee at settlement)
+    Trades whose market has no Kalshi result yet get no number at all. Hits are NOT counted early,
+    because that would leave out the slow-arriving losses and make the average look better than it is.
+    """
+    out = results.copy()
+    up_won = out['ticker'].map(outcomes)                  # NaN when Kalshi's result is not known yet
+    won = up_won.where(out['side'] == 'up', 1 - up_won)   # did THIS side win?
+    ask, target = out['observed_entry_ask'], out['exit_target']
+    hit = out['target_bid_observed'].astype(bool)
+    net_hit = target - ask - ask.map(fee_cents) - target.map(fee_cents)
+    net_miss = 100 * won - ask - ask.map(fee_cents)
+    out['settled_win'] = won
+    out['net_cents_after_fees'] = net_hit.where(hit, net_miss).where(won.notna())
+    return out
+
+
 def render(market):
     st.subheader('Buy Low / Auto-Sell Research')
     st.caption('Records public UP/DOWN bid and ask quotes while this page stays active. No orders are placed.')
@@ -145,12 +200,51 @@ def render(market):
             opportunities=('ticker', 'size'), target_observed=('target_bid_observed', 'sum'),
             mean_entry_ask=('observed_entry_ask', 'mean'))
         summary['observed_hit_rate'] = (100 * summary['target_observed'] / summary['opportunities']).round(1)
+        keys = ['entry_ceiling', 'exit_target']
+        summary = summary.merge(results.groupby(keys, as_index=False).agg(separate_markets=('ticker', 'nunique')),
+                                on=keys, how='left')
+        # --- NEW: what the bid-touch rate leaves out (misses, fees) ---
+        finished = sorted(results['ticker'].unique())
+        outcomes = load_outcomes(finished)
+        shown = results
+        if outcomes:
+            shown = add_net_returns(results, outcomes)
+            known = shown.dropna(subset=['net_cents_after_fees'])
+            if not known.empty:
+                hit_rows = known[known['target_bid_observed'].astype(bool)]
+                miss_rows = known[~known['target_bid_observed'].astype(bool)]
+                summary = (summary
+                           .merge(known.groupby(keys, as_index=False).agg(
+                               with_result=('ticker', 'size'), avg_net=('net_cents_after_fees', 'mean')), on=keys, how='left')
+                           .merge(hit_rows.groupby(keys, as_index=False).agg(
+                               avg_gain=('net_cents_after_fees', 'mean')), on=keys, how='left')
+                           .merge(miss_rows.groupby(keys, as_index=False).agg(
+                               avg_miss=('net_cents_after_fees', 'mean')), on=keys, how='left'))
+                # hit rate p where p * avg gain + (1 - p) * avg miss = 0 (only meaningful when misses lose money)
+                summary['break_even_rate'] = (100 * -summary['avg_miss'] / (summary['avg_gain'] - summary['avg_miss'])
+                                              ).where(summary['avg_miss'] < 0).round(1)
+                for col in ('avg_net', 'avg_gain', 'avg_miss'):
+                    summary[col] = summary[col].round(2)
         st.dataframe(summary.rename(columns={'entry_ceiling': 'Buy at or below (¢)',
                          'exit_target': 'Sell target (¢)', 'opportunities': 'Observed opportunities',
                          'target_observed': 'Bid reached target', 'mean_entry_ask': 'Avg observed buy ask (¢)',
-                         'observed_hit_rate': 'Observed bid-touch rate (%)'}),
+                         'observed_hit_rate': 'Observed bid-touch rate (%)',
+                         'separate_markets': 'Separate markets',
+                         'with_result': 'Trades with Kalshi result',
+                         'avg_net': 'Avg result per contract AFTER fees (¢)',
+                         'avg_gain': 'Avg result when target hit (¢)',
+                         'avg_miss': 'Avg result when target missed (¢)',
+                         'break_even_rate': 'Hit rate needed to break even (%)'}),
                      hide_index=True, use_container_width=True)
-        st.download_button('Download early entry research CSV', results.to_csv(index=False).encode(),
+        if outcomes:
+            st.caption(f'Kalshi results loaded for {len(outcomes)} of {len(finished)} finished markets. '
+                       'A negative "after fees" number means the plan loses money on average, even when the hit rate '
+                       'looks high: misses are held to settlement, and wins are small next to losses. '
+                       'Compare "Observed bid-touch rate" with "Hit rate needed to break even".')
+        else:
+            st.info('Loading Kalshi results so the after-fees numbers can be added. Refresh in a minute. '
+                    'If this stays here, Kalshi results may be unreachable from this server.')
+        st.download_button('Download early entry research CSV', shown.to_csv(index=False).encode(),
                            file_name='kalshi_auto_sell_research.csv', mime='text/csv')
     st.warning('Research only: sampled bid-touch rates are NOT fill probabilities or verified net returns. '
                'Unobserved moves, order queue, size, fees, spread, partial fills, and unsold settlement '
