@@ -2909,6 +2909,6 @@
     "up_fee_est_cents": 1,
     "down_fee_est_cents": 1,
     "actual_up": null,
-    "settled_checked_utc": null
+    "settled_checked_utc": "2026-10-28T12:45:00.444660+00:00"
   }
 ]
