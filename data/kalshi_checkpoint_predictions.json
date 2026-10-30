@@ -8958,5 +8958,21 @@
     "spot_side_up": 1,
     "actual_up": null,
     "settlement_checked_utc": null
+  },
+  {
+    "ticker": "KXBTC15M-26OCT292045-45",
+    "checkpoint_minutes": 9,
+    "observed_utc": "2026-10-30T00:36:07.674324+00:00",
+    "close_utc": "2026-10-30T00:45:00+00:00",
+    "actual_minutes_remaining": 8.872,
+    "kalshi_target": 76846.87,
+    "coinbase_spot": 77061.27,
+    "distance_from_target": 214.4,
+    "model_volatility_1m": 0.001555267,
+    "model_p_up": 0.734136,
+    "model_p_touch": 0.547563,
+    "spot_side_up": 1,
+    "actual_up": null,
+    "settlement_checked_utc": null
   }
 ]
