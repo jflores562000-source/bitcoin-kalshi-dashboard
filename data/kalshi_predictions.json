@@ -5212,7 +5212,7 @@
     "volatility": 0.00048025331115934345,
     "up_fee_est_cents": 1,
     "down_fee_est_cents": 1,
-    "actual_up": null,
-    "settled_checked_utc": "2026-10-30T07:15:02.552586+00:00"
+    "actual_up": 0,
+    "settled_checked_utc": "2026-10-30T07:16:32.704445+00:00"
   }
 ]
