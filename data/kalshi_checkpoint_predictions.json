@@ -10940,8 +10940,8 @@
     "model_p_up": 0.395704,
     "model_p_touch": 0.797205,
     "spot_side_up": 0,
-    "actual_up": null,
-    "settlement_checked_utc": null
+    "actual_up": 0,
+    "settlement_checked_utc": "2026-10-30T08:31:06.219592+00:00"
   },
   {
     "ticker": "KXBTC15M-26OCT300430-30",
@@ -10956,8 +10956,8 @@
     "model_p_up": 0.389194,
     "model_p_touch": 0.786644,
     "spot_side_up": 0,
-    "actual_up": null,
-    "settlement_checked_utc": null
+    "actual_up": 0,
+    "settlement_checked_utc": "2026-10-30T08:31:06.219592+00:00"
   },
   {
     "ticker": "KXBTC15M-26OCT300430-30",
@@ -10972,8 +10972,8 @@
     "model_p_up": 0.337016,
     "model_p_touch": 0.691721,
     "spot_side_up": 0,
-    "actual_up": null,
-    "settlement_checked_utc": null
+    "actual_up": 0,
+    "settlement_checked_utc": "2026-10-30T08:31:06.219592+00:00"
   },
   {
     "ticker": "KXBTC15M-26OCT300430-30",
@@ -10988,7 +10988,7 @@
     "model_p_up": 0.120716,
     "model_p_touch": 0.304004,
     "spot_side_up": 0,
-    "actual_up": null,
-    "settlement_checked_utc": null
+    "actual_up": 0,
+    "settlement_checked_utc": "2026-10-30T08:31:06.219592+00:00"
   }
 ]
