@@ -8108,7 +8108,7 @@
     "volatility": 0.0001641599558824977,
     "up_fee_est_cents": 2,
     "down_fee_est_cents": 2,
-    "actual_up": null,
-    "settled_checked_utc": "2026-11-01T04:45:04.343584+00:00"
+    "actual_up": 1,
+    "settled_checked_utc": "2026-11-01T04:46:36.213055+00:00"
   }
 ]
