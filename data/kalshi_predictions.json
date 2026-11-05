@@ -9132,7 +9132,7 @@
     "volatility": 0.0003638692266721661,
     "up_fee_est_cents": 2,
     "down_fee_est_cents": 1,
-    "actual_up": null,
-    "settled_checked_utc": "2026-11-05T11:00:00.139986+00:00"
+    "actual_up": 0,
+    "settled_checked_utc": "2026-11-05T11:01:33.957960+00:00"
   }
 ]
