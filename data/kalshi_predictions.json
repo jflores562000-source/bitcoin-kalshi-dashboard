@@ -9213,6 +9213,6 @@
     "up_fee_est_cents": 1,
     "down_fee_est_cents": 1,
     "actual_up": null,
-    "settled_checked_utc": null
+    "settled_checked_utc": "2026-11-05T12:15:01.166430+00:00"
   }
 ]
