@@ -12318,5 +12318,21 @@
     "down_fee_est_cents": 2,
     "actual_up": 1,
     "settled_checked_utc": "2026-11-09T17:00:32.211167+00:00"
+  },
+  {
+    "ticker": "KXBTC15M-26NOV091215-15",
+    "observed_utc": "2026-11-09T17:09:31.653780+00:00",
+    "close_utc": "2026-11-09T17:15:00+00:00",
+    "minutes_remaining": 5.472,
+    "kalshi_target": 75001.51,
+    "coinbase_spot": 74780.01,
+    "up_ask_cents": 2.0,
+    "down_ask_cents": 98.1,
+    "p_up": 0.018847,
+    "volatility": 0.0006083774647789727,
+    "up_fee_est_cents": 1,
+    "down_fee_est_cents": 1,
+    "actual_up": null,
+    "settled_checked_utc": null
   }
 ]
