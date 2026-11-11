@@ -24172,8 +24172,8 @@
     "model_p_up": 0.941085,
     "model_p_touch": 0.12911,
     "spot_side_up": 1,
-    "actual_up": null,
-    "settlement_checked_utc": null
+    "actual_up": 0,
+    "settlement_checked_utc": "2026-11-11T09:16:39.779863+00:00"
   },
   {
     "ticker": "KXBTC15M-26NOV110415-15",
@@ -24188,7 +24188,7 @@
     "model_p_up": 0.946635,
     "model_p_touch": 0.129901,
     "spot_side_up": 1,
-    "actual_up": null,
-    "settlement_checked_utc": null
+    "actual_up": 0,
+    "settlement_checked_utc": "2026-11-11T09:16:39.779863+00:00"
   }
 ]
