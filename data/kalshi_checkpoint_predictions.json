@@ -25500,7 +25500,7 @@
     "model_p_up": 1e-06,
     "model_p_touch": 4.8e-05,
     "spot_side_up": 0,
-    "actual_up": null,
-    "settlement_checked_utc": null
+    "actual_up": 0,
+    "settlement_checked_utc": "2026-11-12T05:16:35.418911+00:00"
   }
 ]
