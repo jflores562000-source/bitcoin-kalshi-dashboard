@@ -27052,7 +27052,7 @@
     "model_p_up": 0.878986,
     "model_p_touch": 0.304288,
     "spot_side_up": 1,
-    "actual_up": null,
-    "settlement_checked_utc": null
+    "actual_up": 1,
+    "settlement_checked_utc": "2026-11-13T09:31:36.706881+00:00"
   }
 ]
