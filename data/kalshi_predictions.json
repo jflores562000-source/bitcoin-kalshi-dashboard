@@ -21612,7 +21612,7 @@
     "volatility": 0.0007944748885411879,
     "up_fee_est_cents": 1,
     "down_fee_est_cents": 1,
-    "actual_up": null,
-    "settled_checked_utc": null
+    "actual_up": 0,
+    "settled_checked_utc": "2026-11-17T21:45:39.657375+00:00"
   }
 ]
