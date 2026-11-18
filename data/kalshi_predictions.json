@@ -21948,7 +21948,7 @@
     "volatility": 0.0008097594361765088,
     "up_fee_est_cents": 1,
     "down_fee_est_cents": 1,
-    "actual_up": null,
-    "settled_checked_utc": null
+    "actual_up": 0,
+    "settled_checked_utc": "2026-11-18T03:00:44.046368+00:00"
   }
 ]
