@@ -25580,7 +25580,7 @@
     "volatility": 0.001325692838406632,
     "up_fee_est_cents": 1,
     "down_fee_est_cents": 1,
-    "actual_up": null,
-    "settled_checked_utc": null
+    "actual_up": 0,
+    "settled_checked_utc": "2026-11-20T13:45:43.110743+00:00"
   }
 ]
